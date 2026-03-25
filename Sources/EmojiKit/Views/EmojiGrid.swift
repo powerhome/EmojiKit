@@ -243,8 +243,8 @@ private extension EmojiGrid {
     }
 
     func setCategoryExternal(_ category: EmojiCategory?) {
-        defer { isInternalChange = false }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+        if isInternalChange { isInternalChange = false }
+        if !isScrollingToSelection {
             scrollViewProxy?.scrollToCategory(category)
         }
     }
