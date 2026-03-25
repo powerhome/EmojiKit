@@ -244,7 +244,6 @@ private extension EmojiGrid {
 
     func setCategoryExternal(_ category: EmojiCategory?) {
         defer { isInternalChange = false }
-        if isInternalChange { return }
         scrollViewProxy?.scrollToCategory(category)
     }
 
@@ -255,6 +254,7 @@ private extension EmojiGrid {
 
     func setSelectionExternal(_ selection: Emoji.GridSelection?) {
         defer { isInternalChange = false }
+        if isSelectionVisible(selection) { return }
         scrollViewProxy?.scrollToSelection(
             selection,
             isArrowNavigation: isInternalChange
@@ -336,6 +336,9 @@ private extension EmojiGrid {
     func gridSectionHeader(for category: EmojiCategory, at index: Int) -> some View {
         if #available(iOS 18.0, macOS 15.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *) {
             gridSectionTitle(for: category, at: index)
+                .onScrollVisibilityChange {
+                    handleVisibility($0, for: category)
+                }
         } else {
             gridSectionTitle(for: category, at: index)
         }
