@@ -244,7 +244,9 @@ private extension EmojiGrid {
 
     func setCategoryExternal(_ category: EmojiCategory?) {
         defer { isInternalChange = false }
-        scrollViewProxy?.scrollToCategory(category)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            scrollViewProxy?.scrollToCategory(category)
+        }
     }
 
     func setCategoryInternal(_ category: EmojiCategory) {
