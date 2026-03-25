@@ -36,34 +36,68 @@ struct ContentView: View {
 
     private var categoryBinding: Binding<EmojiCategory?> { $category }
     private var selectionBinding: Binding<Emoji.GridSelection?> { $selectionValue.value }
+    
+    private let categories: [EmojiCategory] = [.recent] + .standard
 
     var body: some View {
-        NavigationStack {
-            EmojiGridScrollView(
-                axis: .vertical,
-                category: categoryBinding,
-                selection: selectionBinding,
-                query: query,
-                action: { print($0) },
-                sectionTitle: { $0.view },
-                gridItem: { $0.view }
-                // gridItem: { $0.view.draggable($0.emoji) } Dragging conflicts with skintone popover.
-            )
+        VStack {
+          searchView
 
-            .focused($isFocused)
-            .navigationTitle(category?.localizedName ?? "EmojiKit")
-            #if os(iOS)
-            .searchable(text: $query, placement: .navigationBarDrawer)
-            #endif
-            .toolbar {
-                ToolbarItem { categoryPicker }
-                ToolbarSpacer()
-                ToolbarItem { sizePicker }
-            }
+          EmojiGridScrollView(
+            categories: categories,
+            category: categoryBinding,
+            selection: selectionBinding,
+            query: query,
+            action: { _ in
+            },
+            sectionTitle: { $0.view },
+            gridItem: { $0.view }
+          )
+
+          categoryFooterView
         }
-        .emojiGridStyle(sizeMode.gridStyle)
-        .tint(.orange)
-        .task { isFocused = true }
+        .background(Color.white)
+    }
+    
+    private var searchView: some View {
+      HStack {
+        TextField("Search", text: $query)
+          .textInputAutocapitalization(.none)
+          .disableAutocorrection(true)
+          .foregroundStyle(.primary)
+      }
+      .padding(.vertical, 8)
+      .padding(.horizontal, 10)
+      .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .strokeBorder(Color.secondary.opacity(0.15), lineWidth: 1)
+      )
+      .padding(.horizontal)
+      .padding(.top, 8)
+    }
+    
+    private var categoryFooterView: some View {
+      HStack {
+        ForEach(categories) { item in
+          Button {
+            if category != item {
+                category = item
+              query = ""
+            }
+          } label: {
+            Image(systemName: item.symbolIconName)
+                  .foregroundColor(category == item ? .blue : .gray)
+          }
+          .frame(maxWidth: 16, maxHeight: 16)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 8)
+        }
+        
+        Spacer()
+      }
+      .padding(.leading, 8)
+      .padding(.bottom, 8)
     }
 }
 

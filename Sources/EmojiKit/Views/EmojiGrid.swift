@@ -91,6 +91,7 @@ public struct EmojiGrid<SectionTitle: View, GridItem: View>: View {
     @State private var isInternalChange = false
     @State private var isScrollingToSelection = false
     @State private var popoverSelection: Emoji.GridSelection?
+    @State private var isProgrammaticCategoryScroll = false
 
     @StateObject private var visibleEmojiState = VisibleEmojiState()
 
@@ -173,7 +174,7 @@ private extension EmojiGrid {
     }
 
     func handleVisibility(_ isVisible: Bool, for category: EmojiCategory) {
-        guard isVisible, !isScrollingToSelection else { return }
+        guard isVisible, !isScrollingToSelection, !isProgrammaticCategoryScroll else { return }
         setCategoryInternal(category)
     }
 
@@ -244,8 +245,11 @@ private extension EmojiGrid {
 
     func setCategoryExternal(_ category: EmojiCategory?) {
         if isInternalChange { isInternalChange = false }
-        if !isScrollingToSelection {
-            scrollViewProxy?.scrollToCategory(category)
+        isProgrammaticCategoryScroll = true
+        scrollViewProxy?.scrollToCategory(category)
+        Task { @MainActor in
+            await Task.yield()
+            isProgrammaticCategoryScroll = false
         }
     }
 
