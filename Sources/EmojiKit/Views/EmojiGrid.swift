@@ -64,8 +64,39 @@ public struct EmojiGrid<SectionTitle: View, GridItem: View>: View {
         self.gridItem = gridItem
     }
 
+    @MainActor
     final class VisibleEmojiState: ObservableObject {
         var emojiIds: Set<String> = []
+
+        private var pendingInsertions: Set<String> = []
+        private var pendingRemovals: Set<String> = []
+        private var applyTask: Task<Void, Never>?
+
+        func setVisibility(id: String, isVisible: Bool) {
+            if isVisible {
+                pendingInsertions.insert(id)
+                pendingRemovals.remove(id)
+            } else {
+                pendingRemovals.insert(id)
+                pendingInsertions.remove(id)
+            }
+            scheduleApply()
+        }
+
+        @MainActor
+        private func scheduleApply() {
+            applyTask?.cancel()
+            applyTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 60_000_000)
+                if Task.isCancelled { return }
+                if !pendingInsertions.isEmpty || !pendingRemovals.isEmpty {
+                    for id in pendingInsertions { emojiIds.insert(id) }
+                    for id in pendingRemovals { emojiIds.remove(id) }
+                    pendingInsertions.removeAll()
+                    pendingRemovals.removeAll()
+                }
+            }
+        }
     }
 
     @Binding var category: EmojiCategory?
@@ -92,6 +123,12 @@ public struct EmojiGrid<SectionTitle: View, GridItem: View>: View {
     @State private var isScrollingToSelection = false
     @State private var popoverSelection: Emoji.GridSelection?
     @State private var isProgrammaticCategoryScroll = false
+    @State private var pendingScrollToSelectionTask: Task<Void, Never>?
+    @State private var pendingCategoryUpdateTask: Task<Void, Never>?
+
+    @State private var isUserScrolling = false
+    @State private var userScrollEndTask: Task<Void, Never>?
+    @State private var pendingFooterCategory: EmojiCategory?
 
     @StateObject private var visibleEmojiState = VisibleEmojiState()
 
@@ -165,17 +202,65 @@ private extension EmojiGrid {
     }
 
     func handleVisibility(_ isVisible: Bool, for emoji: Emoji, in category: EmojiCategory) {
+        markUserScrolling()
+        guard !isScrollingToSelection, !isProgrammaticCategoryScroll else { return }
         let id = emoji.id(in: category)
-        if isVisible {
-            visibleEmojiState.emojiIds.insert(id)
-        } else {
-            visibleEmojiState.emojiIds.remove(id)
-        }
+        visibleEmojiState.setVisibility(id: id, isVisible: isVisible)
     }
 
     func handleVisibility(_ isVisible: Bool, for category: EmojiCategory) {
+        markUserScrolling()
         guard isVisible, !isScrollingToSelection, !isProgrammaticCategoryScroll else { return }
-        setCategoryInternal(category)
+        guard self.category?.id != category.id else { return }
+        pendingCategoryUpdateTask?.cancel()
+        pendingCategoryUpdateTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            if Task.isCancelled { return }
+            if !isScrollingToSelection, !isProgrammaticCategoryScroll, self.category?.id != category.id {
+                self.setCategoryInternal(category)
+            }
+        }
+    }
+
+    func setCategoryExternal(_ category: EmojiCategory?) {
+        if isInternalChange { isInternalChange = false }
+        // If the user is actively scrolling, defer the scroll to avoid fighting the gesture.
+        if isUserScrolling {
+            pendingFooterCategory = category
+            return
+        }
+        scrollToCategoryProgrammatically(category)
+    }
+    
+    func scrollToCategoryProgrammatically(_ category: EmojiCategory?) {
+        isProgrammaticCategoryScroll = true
+        scrollViewProxy?.scrollToCategory(category)
+        Task { @MainActor in
+            await Task.yield()
+            isProgrammaticCategoryScroll = false
+        }
+    }
+    
+    func setCategoryInternal(_ category: EmojiCategory) {
+        isInternalChange = true
+        if self.category?.id != category.id {
+            self.category = category
+        }
+    }
+
+    func markUserScrolling() {
+        if isProgrammaticCategoryScroll { return }
+        if !isUserScrolling { isUserScrolling = true }
+        userScrollEndTask?.cancel()
+        userScrollEndTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            if Task.isCancelled { return }
+            isUserScrolling = false
+            if let pending = pendingFooterCategory {
+                pendingFooterCategory = nil
+                scrollToCategoryProgrammatically(pending)
+            }
+        }
     }
 
     func isSelectionVisible(_ selection: Emoji.GridSelection?) -> Bool {
@@ -243,28 +328,23 @@ private extension EmojiGrid {
         }
     }
 
-    func setCategoryExternal(_ category: EmojiCategory?) {
-        if isInternalChange { isInternalChange = false }
-        isProgrammaticCategoryScroll = true
-        scrollViewProxy?.scrollToCategory(category)
-        Task { @MainActor in
-            await Task.yield()
-            isProgrammaticCategoryScroll = false
-        }
-    }
-
-    func setCategoryInternal(_ category: EmojiCategory) {
-        isInternalChange = true
-        self.category = category
-    }
-
     func setSelectionExternal(_ selection: Emoji.GridSelection?) {
         defer { isInternalChange = false }
         if isSelectionVisible(selection) { return }
-        scrollViewProxy?.scrollToSelection(
-            selection,
-            isArrowNavigation: isInternalChange
-        )
+        if isProgrammaticCategoryScroll || isScrollingToSelection { return }
+        let isArrow = isInternalChange
+        pendingScrollToSelectionTask?.cancel()
+        pendingScrollToSelectionTask = Task { @MainActor in
+            if isArrow {
+                try? await Task.sleep(nanoseconds: 80_000_000)
+            }
+            if Task.isCancelled { return }
+            if isProgrammaticCategoryScroll || isScrollingToSelection { return }
+            scrollViewProxy?.scrollToSelection(
+                selection,
+                isArrowNavigation: isArrow
+            )
+        }
     }
 
     func setSelectionInternal(_ selection: Emoji.GridSelection) {
@@ -318,19 +398,21 @@ private extension EmojiGrid {
     }
     
     func gridContent() -> some View {
-        ForEach(Array(categories.enumerated()), id: \.offset) {
-            let category = $0.element
+        let selectedId = currentSelectedEmojiId()
+        return ForEach(categories.indices, id: \.self) { index in
+            let category = categories[index]
             if category.hasEmojis {
-                gridSection(for: category, at: $0.offset)
+                gridSection(for: category, at: index, selectedId: selectedId)
             }
         }
     }
 
-    func gridSection(for category: EmojiCategory, at index: Int) -> some View {
+    func gridSection(for category: EmojiCategory, at index: Int, selectedId: String?) -> some View {
         Section {
-            let emojis = category.emojis.enumerated()
-            ForEach(Array(emojis), id: \.offset) {
-                gridItem(for: (category, index), emoji: ($0.element, $0.offset))
+            let emojis = category.emojis
+            ForEach(emojis.indices, id: \.self) { emojiIndex in
+                let emoji = emojis[emojiIndex]
+                gridItem(for: (category, index), emoji: (emoji, emojiIndex), selectedId: selectedId)
             }
         } header: {
             gridSectionHeader(for: category, at: index)
@@ -360,25 +442,25 @@ private extension EmojiGrid {
     }
 
     @ViewBuilder
-    func gridItem(for category: (EmojiCategory, Int), emoji: (Emoji, Int)) -> some View {
+    func gridItem(for category: (EmojiCategory, Int), emoji: (Emoji, Int), selectedId: String?) -> some View {
         if #available(iOS 18.0, macOS 15.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *) {
-            gridItemView(for: category, emoji: emoji)
+            gridItemView(for: category, emoji: emoji, selectedId: selectedId)
                 .onScrollVisibilityChange {
                     handleVisibility($0, for: emoji.0, in: category.0)
                 }
         } else {
-            gridItemView(for: category, emoji: emoji)
+            gridItemView(for: category, emoji: emoji, selectedId: selectedId)
         }
     }
 
-    func gridItemView(for category: (EmojiCategory, Int), emoji: (Emoji, Int)) -> some View {
+    func gridItemView(for category: (EmojiCategory, Int), emoji: (Emoji, Int), selectedId: String?) -> some View {
         EmojiGridItemWrapper(
             emoji: emoji.0,
             category: category.0,
             action: { emoji, _ in pickEmoji(emoji) },
             popoverSelection: $popoverSelection,
             content: {
-                let isSelected = isSelected(emoji.0, in: category.0)
+                let isSelected = isSelected(emoji.0, in: category.0, selectedId: selectedId)
                 gridItem(Emoji.GridItemParameters(
                     emoji: emoji.0,
                     emojiIndex: emoji.1,
@@ -401,11 +483,18 @@ private extension EmojiGrid {
 
 private extension EmojiGrid {
     
+    func currentSelectedEmojiId() -> String? {
+        guard let emoji = selection?.emoji, let category = selection?.category else { return nil }
+        return emoji.id(in: category)
+    }
+    
     func isSelected(
         _ emoji: Emoji,
-        in category: EmojiCategory
+        in category: EmojiCategory,
+        selectedId: String?
     ) -> Bool {
-        selection?.isSelected(emoji: emoji, in: category) == true
+        guard let selectedId else { return false }
+        return emoji.id(in: category) == selectedId
     }
 }
 
@@ -451,3 +540,4 @@ private extension EmojiGrid {
 
     return Preview()
 }
+
