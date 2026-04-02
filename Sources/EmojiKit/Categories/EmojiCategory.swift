@@ -81,10 +81,32 @@ public extension EmojiCategory {
     static func search(
         query: String
     ) -> EmojiCategory {
-        .custom(
+        let primary = Emoji.all.matching(query)
+
+        let q = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let allEmojis = EmojiCategory.standardCategories.flatMap { $0.emojis }
+
+        let fallback = allEmojis.filter { emoji in
+            let scalarNames = emoji.char.unicodeScalars.compactMap { $0.properties.name }
+            let haystack = scalarNames.joined(separator: " ").lowercased()
+            return haystack.contains(q)
+        }
+
+        var seen = Set<String>()
+        var combined: [Emoji] = []
+        for e in primary + fallback {
+            let key = e.char
+            if !seen.contains(key) {
+                seen.insert(key)
+                combined.append(e)
+            }
+        }
+
+        return .custom(
             id: "search",
             name: "Search",
-            emojis: Emoji.all.matching(query),
+            emojis: combined,
             iconName: "search"
         )
     }
@@ -349,3 +371,4 @@ extension EmojiCategory {
         .navigationTitle("Emoji Categories")
     }
 }
+
